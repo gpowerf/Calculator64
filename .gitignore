@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+testmath.prg
+testdisk.d64
+*.s64
