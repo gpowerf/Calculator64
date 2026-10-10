@@ -1,7 +1,7 @@
 # Calculator64
 
 A decimal calculator app for [GUI64](https://github.com/WebFritzi/GUI64) on the
-Commodore 64 — to our knowledge, the first calculator written for the GUI64
+Commodore 64 — to my knowledge, the first calculator written for the GUI64
 desktop environment.
 
 ![Calculator64 running in GUI64](screenshots/calculator64.png)
