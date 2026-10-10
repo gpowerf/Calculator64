@@ -68,6 +68,12 @@ These are GUI64 runtime issues the app compensates for:
   clears pressed flags on `EC_LBTNRELEASE`.
 - `GUI_SelectControl` loses a carry for control indices >= 16, so the app
   sets/clears these buttons' flags directly in the control heap.
+- The runtime delivers events through a single `exit_code` byte that the
+  IRQ overwrites, so a pending mouse-release can be lost while the app
+  repaints. All pressed buttons are then drawn from the same shared
+  charset chars (240-255), so the next pressed button makes the stuck one
+  flash its label. The app detects this on later events (no mouse button
+  held, yet a button is still marked pressed) and unsticks it.
 
 ## Credits
 

@@ -6,9 +6,9 @@ Drives the app entirely through the VICE remote monitor:
 - Mouse clicks: the GUI64 mouse is sprite 0 ($D000/$D001). Set the driver
   state ($77/$79) and the sprite, then set exit_code ($39) = 3
   (EC_LBTNPRESS) and resume with 'g'. A couple of RAM patches make the
-  synthetic events reliable: the runtime keyboard scan's STA $53 ($0690)
-  and the mouse driver's spurious EC_MOUSEMOVE writes ($08EB/$08FF). Both
-  patches are only applied if the expected code bytes are present.
+  synthetic events reliable: the runtime keyboard scan's STA $53 and the
+  mouse driver's spurious EC_MOUSEMOVE STA $39 writes. The patch sites
+  shift between cart builds, so they are located by byte pattern.
 - Keyboard: set actkey ($53) to PETSCII, exit_code = 10 (EC_KEYPRESS),
   resume with 'g'.
 
@@ -31,7 +31,6 @@ ROMS = os.environ.get("VICE_ROMS", "/usr/share/vice/C64")
 STR_DISPLAY = 0xB0D2
 ZP_EXIT = 0x39
 ZP_KEY = 0x53
-SCAN_STA_ACTKEY = 0x0690   # runtime keyboard scan: A9 FF 85 0E 85 53
 
 # Button centers in emulated screen char coords (xScr = (sprX-24)/8):
 # window is at (8,1), 23x20; client area starts at row 3, col 8.
@@ -186,6 +185,32 @@ def _wait_consumed(m, timeout=3.0):
     return False
 
 
+def patch_runtime(m):
+    """NOP the runtime's own actkey/exit_code writes in low RAM so the
+    synthetic events injected via $53/$39 survive. The write sites sit
+    in the IRQ driver, whose addresses shift between cart builds, so
+    locate them by byte pattern:
+      keyboard scan:  A9 FF 85 0E 85 53  -> NOP the STA $53
+      mouse movement: A9 05 85 39        -> NOP the STA $39
+    """
+    ram = m.read(0x0400, 0x0C00)
+    base = 0x0400
+    for i in range(len(ram) - 5):
+        if ram[i:i + 6] == b"\xa9\xff\x85\x0e\x85\x53":
+            a = base + i + 4
+            if m.read(a, 2) != b"\xea\xea":
+                print(f"patched keyboard scan STA $53 at ${a:04x}")
+                m.poke(a, 0xEA)
+                m.poke(a + 1, 0xEA)
+    for i in range(len(ram) - 3):
+        if ram[i:i + 4] == b"\xa9\x05\x85\x39":
+            a = base + i + 2
+            if m.read(a, 2) != b"\xea\xea":
+                print(f"patched mouse driver STA $39 at ${a:04x}")
+                m.poke(a, 0xEA)
+                m.poke(a + 1, 0xEA)
+
+
 def main():
     subprocess.run(["pkill", "-9", "-x", "x64sc"], check=False)
     time.sleep(2)
@@ -228,20 +253,8 @@ def main():
         m.quit()
         return 1
 
-    # NOP the runtime keyboard scan's STA $53 so injected keys persist
-    old = m.read(SCAN_STA_ACTKEY, 2)
-    if old != b"\xea\xea":
-        m.poke(SCAN_STA_ACTKEY, 0xEA)
-        m.poke(SCAN_STA_ACTKEY + 1, 0xEA)
-        print(f"patched $0690: {old.hex()} -> EAEA")
-
-    # NOP the mouse driver's spurious EC_MOUSEMOVE writes ($39 = 5) so
-    # synthetic clicks are never preempted by driver events
-    for addr in (0x08EB, 0x08FF):
-        if m.read(addr, 2) == b"\x85\x39":
-            m.poke(addr, 0xEA)
-            m.poke(addr + 1, 0xEA)
-            print(f"patched ${addr:04x}: 8539 -> EAEA")
+    # NOP the runtime's own writes so injected keys/clicks persist
+    patch_runtime(m)
 
     results = []
 
@@ -353,6 +366,53 @@ def main():
         press_key(m, 0x39)          # 999999999
     press_key(m, 0x3D)              # =
     check("key big product -> 9.99999998E17", "9.99999998E17")
+
+    # ----- lost-release unstick -----
+    # GUI64 delivers events through one exit_code byte that the IRQ
+    # overwrites, so the app's press repaint can eat a pending
+    # EC_LBTNRELEASE. The button then stays marked pressed (and drawn
+    # from the shared charset), so the next pressed button makes it
+    # flash the wrong label. The app must detect "no mouse button held
+    # but a button still pressed" on later events and unstick it.
+    ptr = m.read(0x1A, 2)
+    heap = ptr[0] | (ptr[1] << 8)
+
+    def flag(idx):
+        return m.read(heap + idx * 16 + 7, 1)[0]
+
+    def fire(code, key=None):
+        _drain_exit(m, wait=0.5)
+        if key is not None:
+            m.poke(ZP_KEY, key)
+        m.poke(ZP_EXIT, code)
+        m.cmd("g", 0.3)
+        _wait_consumed(m)
+        time.sleep(0.2)
+
+    press_key(m, 0x43)              # C
+    click_button(m, BUTTON_7)       # press only: release never arrives
+    stuck = flag(6)
+    fire(5)                         # EC_MOUSEMOVE
+    ok = stuck & 2 and flag(6) == 0 and m.read(0x84, 1)[0] == 0
+    results.append(ok)
+    print(f"{'PASS' if ok else 'FAIL'}  lost release: mousemove unsticks 7 "
+          f"(flag {stuck:02x} -> {flag(6):02x})")
+
+    click_button(m, BUTTON_1)       # press only
+    fire(5)                         # EC_MOUSEMOVE
+    ok = flag(14) == 0 and m.read(0x84, 1)[0] == 0
+    results.append(ok)
+    print(f"{'PASS' if ok else 'FAIL'}  lost release: mousemove unsticks 1 "
+          f"(flag -> {flag(14):02x})")
+
+    press_key(m, 0x43)              # C: clean display for the next check
+    click_button(m, BUTTON_7)       # press only
+    fire(10, key=0x33)              # key "3": purge and enter digit
+    got = display_str(m).strip()
+    ok = flag(6) == 0 and got == "73"
+    results.append(ok)
+    print(f"{'PASS' if ok else 'FAIL'}  lost release: keypress unsticks 7 "
+          f"and enters 3 (flag -> {flag(6):02x}, display {got!r})")
 
     m.quit()
 

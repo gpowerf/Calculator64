@@ -28,6 +28,8 @@ KEY_POINT       = 27
 
 ; GUI64 runtime internals (see GUI64 Constants_win.asm)
 ControlPressed  = $84           ; nonzero while the runtime tracks a press
+IsLBtnPressed   = $7d           ; physical left mouse button (IRQ driver)
+bFirePressed    = $7e           ; joystick fire, alt. left button
 
 *=$b000
 AppStart
@@ -62,17 +64,22 @@ AppStart
 !zone WndProc
 CalcWndProc     jsr GUI_StdWndProc      ; must always be called first
                 lda wndParam1
-                bmi cw_rts              ; dialog mode: ignore
-                bne cw_menu
-                ; ----- normal mode -----
+                bpl +                   ; dialog mode ($ff): ignore
+                rts
++
+                beq cw_normal
+                jmp cw_menu             ; menu mode
+cw_normal       ; ----- normal mode -----
                 lda wndParam0
                 cmp #EC_KEYPRESS
                 beq cw_key
                 cmp #EC_LBTNRELEASE
                 beq cw_release
                 cmp #EC_LBTNPRESS
-                bne cw_rts
-                jsr GUI_IsInCurControl
+                beq cw_press
+                jsr CheckStale          ; mousemove, dblclick, wheel, ...
+                jmp cw_rts
+cw_press        jsr GUI_IsInCurControl
                 bcc cw_hit              ; not a scanned control: hit-test
                 ldx ControlType
                 cpx #CT_BUTTON
@@ -99,7 +106,8 @@ cw_hit          jsr HitTestButtons      ; GUI64 v2.1 misses ctrls 16..18
                 jmp Dispatch
 cw_release      jsr ClearAllPressed     ; runtime leaves buttons pressed
                 jmp GUI_RepaintCurWindow
-cw_key          jmp KeyPet
+cw_key          jsr CheckStale
+                jmp KeyPet
                 ; ----- menu mode -----
 cw_menu         lda wndParam0
                 cmp #EC_LBTNPRESS
@@ -158,6 +166,39 @@ cap_lp          txa
                 cpx WindowNumCtrls
                 bcc cap_lp
                 rts
+
+;---------------------------------------------------------------
+; CheckStale: unstick a lost mouse release. GUI64 delivers events
+; through a single exit_code byte that the IRQ overwrites, so the
+; release can be lost while this app repaints after a press. The
+; button then stays marked pressed (drawn from the shared charset
+; chars 240-255), and the next pressed button makes it display
+; the wrong label until a repaint. With no mouse/fire button
+; physically held, nothing can legitimately be pressed: drop the
+; stale flag(s) and the runtime's press tracking.
+;---------------------------------------------------------------
+CheckStale      lda IsLBtnPressed
+                ora bFirePressed
+                bne cs_rts              ; button held: the press is real
+                lda ControlPressed
+                beq cs_rts              ; runtime tracks no press
+                ldx #0
+cs_scan         txa
+                jsr HeapPtrA
+                ldy #7
+                lda ($fb),y
+                and #BIT_CTRL_ISPRESSED
+                bne cs_purge
+                inx
+                cpx WindowNumCtrls
+                bcc cs_scan
+                lda #0                  ; flags already clean
+                sta ControlPressed
+cs_rts          rts
+cs_purge        lda #0                  ; release never coming: unstick
+                sta ControlPressed
+                jsr ClearAllPressed
+                jmp GUI_RepaintCurWindow
 
 ;---------------------------------------------------------------
 ; Direct control-heap access. GUI64 v2.1's GUI_SelectControl
@@ -527,6 +568,6 @@ Str_Menubar     !pet "File",0,"Help",0
 Menu_File       !pet ID_MENU_FILE,4,1,"Quit",0
 Menu_Help       !pet ID_MENU_HELP,5,1,"About",0
 
-Str_About       !pet 221,222,223," Calculator64 v1.0"
+Str_About       !pet 221,222,223," Calculator64 v1.1"
                 !byte 28                ; PETSCII line separator
                 !pet 224,225,226," by Guillermo Power",0
