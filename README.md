@@ -53,8 +53,9 @@ This produces `calculator.gui` (the app) and `calculator.d64` (disk image).
 ## Tests
 
 - `test_gui64.py` — drives the built app inside a real GUI64 cartridge via
-  VICE's remote monitor and checks 19 interactive cases (mouse and keyboard).
-  Set `GUI64_CART` to your GUI64 v2.1 cart if it is not at the default path.
+  VICE's remote monitor and checks 22 interactive cases (mouse, keyboard and
+  regression tests for the runtime quirks below). Set `GUI64_CART` to your
+  GUI64 v2.1 cart if it is not at the default path.
 - `test_math.sh` + `verify_math.py` — assemble the standalone decimal math
   harness, run it in VICE and check all 20 arithmetic results.
 
